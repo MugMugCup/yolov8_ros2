@@ -29,7 +29,7 @@ class Yolov8Node(Node):
         rclpy.logging.set_logger_level('yolov8_node', rclpy.logging.LoggingSeverity.INFO)
         
         ## Declare parameters for node
-        self.declare_parameter("model", "yolov8n-seg.pt")
+        self.declare_parameter("model", "yolov8s-seg.pt")
         model = self.get_parameter("model").get_parameter_value().string_value
         
         self.declare_parameter("device", "cuda:0")
@@ -52,7 +52,7 @@ class Yolov8Node(Node):
         self.depth_image_msg = None
         self.camera_intrinsics = None
         self.pred_image_msg = Image()
-        
+
         # Publishers
         self._item_dict_pub = self.create_publisher(String, "/yolo/prediction/item_dict", 10)
         self._pred_pub = self.create_publisher(Image, "/yolo/prediction/image", 10)
