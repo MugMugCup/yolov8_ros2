@@ -24,7 +24,6 @@ import open3d as o3d
 import time, json, torch
 
 class Yolov8Node(Node):
-    
     def __init__(self):
         super().__init__("yolov8_node")
         rclpy.logging.set_logger_level('yolov8_node', rclpy.logging.LoggingSeverity.INFO)
@@ -57,15 +56,14 @@ class Yolov8Node(Node):
         # Publishers
         self._item_dict_pub = self.create_publisher(String, "/yolo/prediction/item_dict", 10)
         self._pred_pub = self.create_publisher(Image, "/yolo/prediction/image", 10)
-        
+
         # Subscribers
         self._color_image_sub = self.create_subscription(Image, "/camera/camera/color/image_raw", self.color_image_callback, qos_profile_sensor_data, callback_group=self.group_1)
         self._depth_image_sub = self.create_subscription(Image, "/camera/camera/aligned_depth_to_color/image_raw", self.depth_image_callback, qos_profile_sensor_data, callback_group=self.group_1)
         self._camera_info_subscriber = self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.camera_info_callback, QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE), callback_group=self.group_1)
 
-        # Timers
-        # self._vision_timer = self.create_timer(0.04, self.object_segmentation, callback_group=self.group_2) # 25 hz
-        self._vision_timer = self.create_timer(0.08, self.object_segmentation, callback_group=self.group_2) # 25 hz
+        # 一定間隔で繰り返す（第一引数が間隔）
+        self._vision_timer = self.create_timer(0.5, self.object_segmentation, callback_group=self.group_2) # 25 hz
 
     def color_image_callback(self, msg):
         self.color_image_msg = msg
@@ -78,11 +76,11 @@ class Yolov8Node(Node):
             if self.camera_intrinsics is None:
                 self.camera_intrinsics = o3d.camera.PinholeCameraIntrinsic()
                 self.camera_intrinsics.set_intrinsics(msg.width,    #msg.width
-                                                  msg.height,       #msg.height
-                                                  msg.k[0],         #msg.K[0] -> fx
-                                                  msg.k[4],         #msg.K[4] -> fy
-                                                  msg.k[2],         #msg.K[2] -> cx
-                                                  msg.k[5] )        #msg.K[5] -> cy
+                                                    msg.height,       #msg.height
+                                                    msg.k[0],         #msg.K[0] -> fx
+                                                    msg.k[4],         #msg.K[4] -> fy
+                                                    msg.k[2],         #msg.K[2] -> cx
+                                                    msg.k[5] )        #msg.K[5] -> cy
                 self.get_logger().info('Camera intrinsics have been set!')
             
         except Exception as e:
@@ -92,7 +90,7 @@ class Yolov8Node(Node):
         if self.enable_yolo and self.color_image_msg is not None:
             self.get_logger().debug("Succesfully acquired color image msg")
             
-            # Predict on color image
+            # カラー画像から物体認識を行う
             cv_color_image = self.cv_bridge.imgmsg_to_cv2(self.color_image_msg, desired_encoding='bgr8')
             results = self.yolo.predict(
                 source=cv_color_image,
@@ -109,42 +107,42 @@ class Yolov8Node(Node):
             detection_conf = results[0].boxes.conf.cpu().numpy()
             
             for i, cls in enumerate(detection_class):
-                # if results[0].names[int(cls)] == "person":
                 # Extract image with yolo predictions
                 pred_img = results[0].plot()
                 self.pred_image_msg = self.cv_bridge.cv2_to_imgmsg(pred_img, encoding='passthrough')
                 self._pred_pub.publish(self.pred_image_msg)
 
                 if results[0].names[int(cls)] == "person":
-                    # Collect object information
+                    # ボックスの中央のX座標とY座標を求める
+                    bbox = results[0].boxes.xyxy.cpu().numpy()[i]
+                    x_center = int((bbox[0] + bbox[2]) / 2)
+                    y_center = int((bbox[1] + bbox[3]) / 2)
+
+                    # item_dictに必要なデータを加える
                     item_dict[f'person_{i}'] = {
                         'class': results[0].names[int(cls)],
-                        'confidence': detection_conf[i].tolist()
+                        'confidence': round(detection_conf[i].tolist(), 3),
+                        'Xpos': round(x_center, 3),
+                        'Ypos': round(y_center, 3)
                     }
 
-                    self.get_logger().info(f"Detected {len(item_dict)} person(s) in the image")
-                    self.get_logger().info(f"Item dictionary: {item_dict}")
-
-
+                    # 深さ情報を受け取ったときのみ、
                     if self.depth_image_msg is not None:
-                        # Handle depth information if available
+                        # 深さ情報を使える形にする
                         np_depth_image = self.cv_bridge.imgmsg_to_cv2(self.depth_image_msg, desired_encoding='passthrough')
                         depth_image_3d = np.dstack((np_depth_image, np_depth_image, np_depth_image))
                         
-                        # Assuming the position is the center of the bounding box
-                        bbox = results[0].boxes.xyxy.cpu().numpy()[i]
-                        x_center = int((bbox[0] + bbox[2]) / 2)
-                        y_center = int((bbox[1] + bbox[3]) / 2)
+                        # Z座標を求めて、item_dictに加える
                         depth_value = np_depth_image[y_center, x_center]
-                        
-                        # Log depth information
-                        self.get_logger().info(f"Depth value for person_{i}: {depth_value:.2f}")
-                        item_dict[f'person_{i}']['depth'] = depth_value.tolist()
+                        item_dict[f'person_{i}']['Zpos'] = depth_value.tolist()
                     else:
                         self.get_logger().info("Depth image is not available.")
+                
+                # コンソールに出力
+                self.get_logger().info(f"Detected {len(item_dict)} person(s) in the image")
+                self.get_logger().info(f"Item dictionary: {item_dict}")
 
-
-            # Publish item dict
+            # item_dictをPublishする
             item_dict_msg = String()
             item_dict_msg.data = json.dumps(item_dict)
             self._item_dict_pub.publish(item_dict_msg)
@@ -178,4 +176,3 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
-
